@@ -53,19 +53,7 @@ extension AppDelegate {
                 } else if fm.fileExists(atPath: url.appending(path: "project.json").path) {
                     wallpaperURLs.append(url)
                 } else {
-                    // Scan immediate children for wallpaper folders
-                    guard let children = try? fm.contentsOfDirectory(
-                        at: url, includingPropertiesForKeys: [.isDirectoryKey],
-                        options: .skipsHiddenFiles
-                    ) else { continue }
-                    for child in children {
-                        var isDir: ObjCBool = false
-                        if fm.fileExists(atPath: child.path, isDirectory: &isDir),
-                           isDir.boolValue,
-                           fm.fileExists(atPath: child.appending(path: "project.json").path) {
-                            wallpaperURLs.append(child)
-                        }
-                    }
+                    wallpaperURLs.append(contentsOf: ZipImporter.findWallpaperFolders(in: url))
                 }
             }
 
@@ -86,6 +74,7 @@ extension AppDelegate {
                 for url in zipURLs {
                     ZipImporter.importZip(at: url)
                 }
+                self?.contentViewModel.refresh()
             }
         }
     }

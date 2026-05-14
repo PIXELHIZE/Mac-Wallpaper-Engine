@@ -67,6 +67,7 @@ struct WESceneObject: Codable {
     var scale: String?
     var angles: String?
     var visible: Bool?
+    var visibleValue: WEFlexibleBool?
 
     // Image objects
     var image: String?       // path to model JSON
@@ -80,6 +81,25 @@ struct WESceneObject: Codable {
     var copybackground: Bool?
     var parallaxDepth: String?
     var perspective: Bool?
+    var effects: [WESceneEffect]?
+    var animationlayers: [WEAnimationLayer]?
+
+    // Text objects
+    var text: WETextValue?
+    var font: String?
+    var pointsize: Double?
+    var backgroundcolor: String?
+    var backgroundbrightness: Double?
+    var opaquebackground: Bool?
+    var padding: Double?
+    var horizontalalign: String?
+    var verticalalign: String?
+    var anchor: String?
+    var blockalign: Bool?
+    var maxwidth: Double?
+    var maxrows: Int?
+    var limitwidth: Bool?
+    var limitrows: Bool?
 
     // Particle objects
     var particle: String?    // path to particle JSON
@@ -88,7 +108,10 @@ struct WESceneObject: Codable {
     enum CodingKeys: String, CodingKey {
         case id, name, origin, scale, angles, visible
         case image, alpha, brightness, color, colorBlendMode, size, alignment
-        case solid, copybackground, parallaxDepth, perspective
+        case solid, copybackground, parallaxDepth, perspective, effects, animationlayers
+        case text, font, pointsize, backgroundcolor, backgroundbrightness, opaquebackground
+        case padding, horizontalalign, verticalalign, anchor, blockalign, maxwidth, maxrows
+        case limitwidth, limitrows
         case particle, instanceoverride
     }
 
@@ -106,6 +129,7 @@ struct WESceneObject: Codable {
         scale = try? c.decodeIfPresent(String.self, forKey: .scale)
         angles = try? c.decodeIfPresent(String.self, forKey: .angles)
         visible = try? c.decodeIfPresent(Bool.self, forKey: .visible)
+        visibleValue = try? c.decodeIfPresent(WEFlexibleBool.self, forKey: .visible)
         alpha = try? c.decodeIfPresent(Double.self, forKey: .alpha)
         brightness = try? c.decodeIfPresent(Double.self, forKey: .brightness)
         color = try? c.decodeIfPresent(String.self, forKey: .color)
@@ -116,6 +140,200 @@ struct WESceneObject: Codable {
         copybackground = try? c.decodeIfPresent(Bool.self, forKey: .copybackground)
         parallaxDepth = try? c.decodeIfPresent(String.self, forKey: .parallaxDepth)
         perspective = try? c.decodeIfPresent(Bool.self, forKey: .perspective)
+        effects = try? c.decodeIfPresent([WESceneEffect].self, forKey: .effects)
+        animationlayers = try? c.decodeIfPresent([WEAnimationLayer].self, forKey: .animationlayers)
+        text = try? c.decodeIfPresent(WETextValue.self, forKey: .text)
+        font = try? c.decodeIfPresent(String.self, forKey: .font)
+        pointsize = try? c.decodeIfPresent(Double.self, forKey: .pointsize)
+        backgroundcolor = try? c.decodeIfPresent(String.self, forKey: .backgroundcolor)
+        backgroundbrightness = try? c.decodeIfPresent(Double.self, forKey: .backgroundbrightness)
+        opaquebackground = try? c.decodeIfPresent(Bool.self, forKey: .opaquebackground)
+        padding = try? c.decodeIfPresent(Double.self, forKey: .padding)
+        horizontalalign = try? c.decodeIfPresent(String.self, forKey: .horizontalalign)
+        verticalalign = try? c.decodeIfPresent(String.self, forKey: .verticalalign)
+        anchor = try? c.decodeIfPresent(String.self, forKey: .anchor)
+        blockalign = try? c.decodeIfPresent(Bool.self, forKey: .blockalign)
+        maxwidth = try? c.decodeIfPresent(Double.self, forKey: .maxwidth)
+        maxrows = try? c.decodeIfPresent(Int.self, forKey: .maxrows)
+        limitwidth = try? c.decodeIfPresent(Bool.self, forKey: .limitwidth)
+        limitrows = try? c.decodeIfPresent(Bool.self, forKey: .limitrows)
+    }
+
+    var isVisible: Bool {
+        visible ?? visibleValue?.value ?? true
+    }
+}
+
+struct WEFlexibleBool: Codable {
+    var user: String?
+    var value: Bool?
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let bool = try? container.decode(Bool.self) {
+            self.user = nil
+            self.value = bool
+        } else {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.user = try container.decodeIfPresent(String.self, forKey: .user)
+            self.value = try container.decodeIfPresent(Bool.self, forKey: .value)
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case user, value
+    }
+}
+
+struct WETextValue: Codable {
+    var value: String?
+    var scriptproperties: WETextScriptProperties?
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let text = try? container.decode(String.self) {
+            self.value = text
+            self.scriptproperties = nil
+        } else {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.value = try container.decodeIfPresent(String.self, forKey: .value)
+            self.scriptproperties = try container.decodeIfPresent(WETextScriptProperties.self, forKey: .scriptproperties)
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case value, scriptproperties
+    }
+}
+
+struct WETextScriptProperties: Codable {
+    var delimiter: String?
+    var showSeconds: WEFlexibleBool?
+    var use24hFormat: WEFlexibleBool?
+    var addDelimiter: String?
+    var alignVertical: Bool?
+    var dayFormat: String?
+    var monthFormat: String?
+    var showDay: Bool?
+    var useDelimiter: Bool?
+}
+
+struct WESceneEffect: Codable {
+    var file: String?
+    var visible: WEFlexibleBool?
+    var passes: [WESceneEffectPass]?
+}
+
+struct WESceneEffectPass: Codable {
+    var combos: [String: Int]?
+    var constantshadervalues: [String: WEEffectValue]?
+    var textures: [String?]?
+}
+
+struct WEAnimationLayer: Codable {
+    var id: Int?
+    var name: String?
+    var animation: Int?
+    var additive: Bool?
+    var blend: Double?
+    var rate: WEScriptValue?
+    var visible: WEFlexibleBool?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decodeIfPresent(Int.self, forKey: .id)
+        name = try? c.decodeIfPresent(String.self, forKey: .name)
+        animation = try? c.decodeIfPresent(Int.self, forKey: .animation)
+        additive = try? c.decodeIfPresent(Bool.self, forKey: .additive)
+        blend = try? c.decodeIfPresent(Double.self, forKey: .blend)
+        rate = try? c.decodeIfPresent(WEScriptValue.self, forKey: .rate)
+        visible = try? c.decodeIfPresent(WEFlexibleBool.self, forKey: .visible)
+    }
+
+    var isVisible: Bool {
+        visible?.value ?? true
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, animation, additive, blend, rate, visible
+    }
+}
+
+enum WEEffectValue: Codable {
+    case number(Double)
+    case string(String)
+    case bool(Bool)
+    case userNumber(user: String?, value: Double)
+    case userBool(user: String?, value: Bool)
+
+    init(from decoder: Decoder) throws {
+        let single = try decoder.singleValueContainer()
+        if let number = try? single.decode(Double.self) {
+            self = .number(number)
+            return
+        }
+        if let string = try? single.decode(String.self) {
+            self = .string(string)
+            return
+        }
+        if let bool = try? single.decode(Bool.self) {
+            self = .bool(bool)
+            return
+        }
+
+        let keyed = try decoder.container(keyedBy: CodingKeys.self)
+        let user = try keyed.decodeIfPresent(String.self, forKey: .user)
+        if let value = try? keyed.decode(Double.self, forKey: .value) {
+            self = .userNumber(user: user, value: value)
+            return
+        }
+        if let value = try? keyed.decode(Bool.self, forKey: .value) {
+            self = .userBool(user: user, value: value)
+            return
+        }
+        self = .number(0)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .number(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .string(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .bool(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .userNumber(let user, let value):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(user, forKey: .user)
+            try container.encode(value, forKey: .value)
+        case .userBool(let user, let value):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(user, forKey: .user)
+            try container.encode(value, forKey: .value)
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case user, value
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .number(let value), .userNumber(_, let value): return value
+        case .string(let value): return Double(value)
+        case .bool(let value), .userBool(_, let value): return value ? 1 : 0
+        }
+    }
+
+    var stringValue: String? {
+        switch self {
+        case .string(let value): return value
+        case .number(let value), .userNumber(_, let value): return String(value)
+        case .bool(let value), .userBool(_, let value): return value ? "true" : "false"
+        }
     }
 }
 
@@ -153,6 +371,7 @@ struct WEScriptValue: Codable {
 struct WEModel: Codable {
     var autosize: Bool?
     var material: String?    // path to material JSON
+    var puppet: String?      // path to MDLV puppet mesh
 }
 
 struct WEMaterial: Codable {

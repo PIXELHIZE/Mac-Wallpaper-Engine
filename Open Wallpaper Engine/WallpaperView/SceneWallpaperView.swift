@@ -24,6 +24,8 @@ struct SceneWallpaperView: NSViewRepresentable {
         let skView = SKView(frame: .zero)
         skView.ignoresSiblingOrder = true
         skView.allowsTransparency = false
+        skView.shouldCullNonVisibleNodes = true
+        skView.isAsynchronous = true
         skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
 
         if let scene = viewModel.skScene {
@@ -51,7 +53,9 @@ struct SceneWallpaperView: NSViewRepresentable {
         // Update FPS
         skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
 
-        // Pause/resume based on play rate
-        skView.isPaused = wallpaperViewModel.playRate == 0
+        // Pause rendering when the desktop is covered or the user pauses playback.
+        let shouldPause = wallpaperViewModel.effectivePlayRate == 0
+        skView.isPaused = shouldPause
+        skView.scene?.isPaused = shouldPause
     }
 }

@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var mainWindowController: MainWindowController!
     
     var wallpaperWindows: [String: NSWindow] = [:]
+    private var wallpaperVisibilityMonitor: WallpaperVisibilityMonitor?
     
     var contentViewModel = ContentViewModel()
     var wallpaperViewModel = WallpaperViewModel()
@@ -35,6 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         
         // 创建桌面壁纸视窗
         setWallpaperWindows()
+        wallpaperVisibilityMonitor = WallpaperVisibilityMonitor(wallpaperViewModel: wallpaperViewModel)
+        wallpaperVisibilityMonitor?.start()
 
         // 监听显示器连接/断开
         NotificationCenter.default.addObserver(

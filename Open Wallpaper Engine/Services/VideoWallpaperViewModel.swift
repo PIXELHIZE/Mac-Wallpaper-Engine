@@ -49,10 +49,10 @@ class VideoWallpaperViewModel: ObservableObject {
 
         // Directly observe playRate/playVolume changes from the shared WallpaperViewModel
         let wvm = AppDelegate.shared.wallpaperViewModel
-        wvm.$playRate
+        wvm.$playRate.combineLatest(wvm.$renderingSuspended)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] rate in
-                self?.playRate = rate
+            .sink { [weak self] rate, suspended in
+                self?.playRate = suspended ? 0 : rate
             }
             .store(in: &cancellables)
         wvm.$playVolume

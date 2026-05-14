@@ -26,7 +26,8 @@ enum ZipImporter {
             return 0
         }
 
-        // Find wallpaper folders inside extracted content
+        // Find wallpaper folders inside extracted content. Some third-party zip
+        // archives include a wrapper folder plus unrelated files next to it.
         let wallpaperURLs = findWallpaperFolders(in: tempDir)
         let dest = fm.wallpapersDirectory
         var imported = 0
@@ -46,43 +47,28 @@ enum ZipImporter {
         return imported
     }
 
-    /// Recursively searches for directories containing project.json, up to 3 levels deep.
-    private static func findWallpaperFolders(in directory: URL) -> [URL] {
+    /// Recursively searches for directories containing project.json.
+    static func findWallpaperFolders(in directory: URL) -> [URL] {
         let fm = FileManager.default
         var results: [URL] = []
 
-        // Check if this directory itself is a wallpaper
         if fm.fileExists(atPath: directory.appending(path: "project.json").path) {
             return [directory]
         }
 
-        // Check immediate children
-        guard let children = try? fm.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.isDirectoryKey],
-            options: .skipsHiddenFiles
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
 
-        for child in children {
+        for case let child as URL in enumerator {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: child.path, isDirectory: &isDir), isDir.boolValue else { continue }
 
             if fm.fileExists(atPath: child.appending(path: "project.json").path) {
                 results.append(child)
-            } else {
-                // One more level deep (zip may have a wrapper folder)
-                if let grandchildren = try? fm.contentsOfDirectory(
-                    at: child, includingPropertiesForKeys: [.isDirectoryKey],
-                    options: .skipsHiddenFiles
-                ) {
-                    for grandchild in grandchildren {
-                        var isSubDir: ObjCBool = false
-                        if fm.fileExists(atPath: grandchild.path, isDirectory: &isSubDir),
-                           isSubDir.boolValue,
-                           fm.fileExists(atPath: grandchild.appending(path: "project.json").path) {
-                            results.append(grandchild)
-                        }
-                    }
-                }
+                enumerator.skipDescendants()
             }
         }
 

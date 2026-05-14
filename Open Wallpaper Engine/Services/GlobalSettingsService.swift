@@ -226,20 +226,20 @@ class GlobalSettingsViewModel: ObservableObject {
         case .low:
             self.settings.antiAliasing = .none
             self.settings.postProcessing = .disabled
-            self.settings.textureResolution = .highQuality
-            self.settings.fps = 10
+            self.settings.textureResolution = .highPerformance
+            self.settings.fps = 24
             self.settings.reflections = false
         case .medium:
             self.settings.antiAliasing = .none
             self.settings.postProcessing = .enabled
-            self.settings.textureResolution = .highQuality
-            self.settings.fps = 15
+            self.settings.textureResolution = .highPerformance
+            self.settings.fps = 30
             self.settings.reflections = true
         case .high:
             self.settings.antiAliasing = .msaa_x2
             self.settings.postProcessing = .enabled
-            self.settings.textureResolution = .highQuality
-            self.settings.fps = 25
+            self.settings.textureResolution = .automatic
+            self.settings.fps = 30
             self.settings.reflections = true
         case .ultra:
             self.settings.antiAliasing = .msaa_x2

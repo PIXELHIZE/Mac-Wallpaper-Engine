@@ -5,6 +5,8 @@
 //  Created by Haren on 2023/8/14.
 //
 
+import Cocoa
+import ApplicationServices
 import SwiftUI
 
 /// Provide Wallpaper Database for WallpaperView and ContentView etc.
@@ -117,6 +119,17 @@ class WallpaperViewModel: ObservableObject {
     }
 
     var lastPlayRate: Float = 1.0
+    @Published public var renderingSuspended: Bool = false {
+        didSet {
+            guard oldValue != renderingSuspended else { return }
+            WEAudioSpectrum.shared.setSuspended(renderingSuspended)
+        }
+    }
+
+    var effectivePlayRate: Float {
+        renderingSuspended ? 0 : playRate
+    }
+
     @Published public var playRate: Float = 1.0 {
         willSet {
             if newValue == 0.0 {
@@ -218,5 +231,232 @@ class WallpaperViewModel: ObservableObject {
         if let data = try? JSONEncoder().encode(currentWallpaper) {
             UserDefaults.standard.set(data, forKey: "CurrentWallpaper")
         }
+    }
+}
+
+final class WallpaperVisibilityMonitor {
+    private static let debugResumeDelay: TimeInterval = 3
+
+    private weak var wallpaperViewModel: WallpaperViewModel?
+    private var timer: Timer?
+    private var delayedResumeTimer: Timer?
+    private var observers: [NSObjectProtocol] = []
+
+    init(wallpaperViewModel: WallpaperViewModel) {
+        self.wallpaperViewModel = wallpaperViewModel
+    }
+
+    deinit {
+        stop()
+    }
+
+    func start() {
+        stop()
+        let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
+            self?.updateVisibilityState()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+
+        let center = NSWorkspace.shared.notificationCenter
+        observers = [
+            center.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in self?.updateVisibilityState() },
+            center.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in self?.updateVisibilityState() },
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in self?.updateVisibilityState() }
+        ]
+
+        updateVisibilityState()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        delayedResumeTimer?.invalidate()
+        delayedResumeTimer = nil
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        observers.removeAll()
+    }
+
+    private func updateVisibilityState() {
+        guard let wallpaperViewModel else { return }
+        let shouldSuspend = shouldSuspendRendering(for: wallpaperViewModel)
+
+        if shouldSuspend {
+            delayedResumeTimer?.invalidate()
+            delayedResumeTimer = nil
+            if !wallpaperViewModel.renderingSuspended {
+                wallpaperViewModel.renderingSuspended = true
+                SceneWallpaperViewModel.log("Wallpaper rendering suspended by desktop visibility monitor")
+            }
+            return
+        }
+
+        guard wallpaperViewModel.renderingSuspended, delayedResumeTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.debugResumeDelay, repeats: false) { [weak self] _ in
+            guard let self, let wallpaperViewModel = self.wallpaperViewModel else { return }
+            self.delayedResumeTimer = nil
+            guard !self.shouldSuspendRendering(for: wallpaperViewModel),
+                  wallpaperViewModel.renderingSuspended else {
+                return
+            }
+            wallpaperViewModel.renderingSuspended = false
+            SceneWallpaperViewModel.log("Wallpaper rendering resumed after \(Self.debugResumeDelay)s debug delay")
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        delayedResumeTimer = timer
+        SceneWallpaperViewModel.log("Wallpaper rendering resume delayed by \(Self.debugResumeDelay)s for fullscreen debug")
+    }
+
+    private func shouldSuspendRendering(for wallpaperViewModel: WallpaperViewModel) -> Bool {
+        let enabledScreens = NSScreen.screens.filter {
+            wallpaperViewModel.isScreenEnabled(WallpaperViewModel.screenId(for: $0))
+        }
+        guard !enabledScreens.isEmpty else { return false }
+        guard let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
+        if frontmostApplicationIsMacFullscreen(processID: frontmostPID) { return true }
+
+        let windows = currentRelevantWindows()
+        guard !windows.isEmpty else { return false }
+
+        return enabledScreens.contains { screen in
+            let displayBoundsCandidates = Self.displayBoundsCandidates(for: screen)
+            return displayBoundsCandidates.contains { displayBounds in
+                windows.contains { window in
+                    window.ownerPID == frontmostPID && isFullscreenWindow(window.bounds, on: displayBounds)
+                }
+            }
+        }
+    }
+
+    private func frontmostApplicationIsMacFullscreen(processID: pid_t) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+
+        let application = AXUIElementCreateApplication(processID)
+        if let focusedWindow = axElementAttribute(application, kAXFocusedWindowAttribute as CFString),
+           axBoolAttribute(focusedWindow, "AXFullScreen" as CFString) == true {
+            return true
+        }
+
+        guard let windows = axArrayAttribute(application, kAXWindowsAttribute as CFString) else {
+            return false
+        }
+        return windows.contains { axBoolAttribute($0, "AXFullScreen" as CFString) == true }
+    }
+
+    private func axElementAttribute(_ element: AXUIElement, _ attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (value as! AXUIElement)
+    }
+
+    private func axArrayAttribute(_ element: AXUIElement, _ attribute: CFString) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value as? [AXUIElement]
+    }
+
+    private func axBoolAttribute(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value as? Bool
+    }
+
+    private func currentRelevantWindows() -> [VisibleWindow] {
+        guard let windowInfo = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return []
+        }
+
+        return windowInfo.compactMap { info in
+            guard let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  layer == 0,
+                  let isOnscreen = (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue,
+                  isOnscreen,
+                  let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue,
+                  alpha > 0.01,
+                  let boundsValue = info[kCGWindowBounds as String] else {
+                return nil
+            }
+
+            let boundsDictionary = boundsValue as! CFDictionary
+            guard let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  bounds.width >= 80,
+                  bounds.height >= 80,
+                  bounds.area >= 10_000 else {
+                return nil
+            }
+
+            let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+            return VisibleWindow(bounds: bounds, ownerPID: ownerPID)
+        }
+    }
+
+    private func isFullscreenWindow(_ windowBounds: CGRect, on displayBounds: CGRect) -> Bool {
+        guard !windowBounds.isEmpty, !displayBounds.isEmpty else { return false }
+
+        let tolerance = max(8, min(displayBounds.width, displayBounds.height) * 0.018)
+        let intersection = windowBounds.intersection(displayBounds)
+
+        let widthRatio = windowBounds.width / max(displayBounds.width, 1)
+        let heightRatio = windowBounds.height / max(displayBounds.height, 1)
+
+        return intersection.area >= displayBounds.area * 0.94
+            && widthRatio >= 0.96
+            && heightRatio >= 0.92
+            && abs(windowBounds.minX - displayBounds.minX) <= tolerance
+            && abs(windowBounds.maxX - displayBounds.maxX) <= tolerance
+            && abs(windowBounds.minY - displayBounds.minY) <= max(tolerance, displayBounds.height * 0.08)
+            && abs(windowBounds.maxY - displayBounds.maxY) <= max(tolerance, displayBounds.height * 0.08)
+    }
+
+    private static func displayBoundsCandidates(for screen: NSScreen) -> [CGRect] {
+        let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+        let cgBounds = CGDisplayBounds(displayID)
+        let candidates = [screen.frame, screen.visibleFrame, cgBounds].filter { !$0.isEmpty }
+        return candidates.reduce(into: [CGRect]()) { result, bounds in
+            if !result.contains(where: { abs($0.minX - bounds.minX) < 0.5
+                && abs($0.minY - bounds.minY) < 0.5
+                && abs($0.width - bounds.width) < 0.5
+                && abs($0.height - bounds.height) < 0.5 }) {
+                result.append(bounds)
+            }
+        }
+    }
+
+    private struct VisibleWindow {
+        let bounds: CGRect
+        let ownerPID: pid_t?
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat {
+        max(0, width) * max(0, height)
     }
 }

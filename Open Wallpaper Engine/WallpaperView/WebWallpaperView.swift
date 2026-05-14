@@ -72,5 +72,7 @@ struct WebWallpaperView: NSViewRepresentable {
             viewModel.currentWallpaper = selectedWallpaper
             Self.loadWallpaper(nsView, viewModel: viewModel)
         }
+
+        nsView.isHidden = wallpaperViewModel.renderingSuspended
     }
 }

@@ -365,23 +365,28 @@ class ContentViewModel: ObservableObject, DropDelegate {
             }
             
             if wallpaper.isDirectory {
-                guard wallpaper.fileWrappers?["project.json"] != nil
-                else{
+                let wallpaperURLs = ZipImporter.findWallpaperFolders(in: url)
+                guard !wallpaperURLs.isEmpty else {
                     self?.alertImportModal(which: .doesNotContainWallpaper)
                     return
                 }
                 DispatchQueue.main.async {
-                    try? FileManager.default.copyItem(
-                        at: url,
-                        to: FileManager.default.wallpapersDirectory
-                            .appending(path: url.lastPathComponent)
-                    )
+                    for wallpaperURL in wallpaperURLs {
+                        let destination = FileManager.default.wallpapersDirectory
+                            .appending(path: wallpaperURL.lastPathComponent)
+                        if !FileManager.default.fileExists(atPath: destination.path) {
+                            try? FileManager.default.copyItem(at: wallpaperURL, to: destination)
+                        }
+                    }
+                    self?.refresh()
                 }
             } else if wallpaper.isRegularFile, url.pathExtension.lowercased() == "zip" {
                 DispatchQueue.main.async {
                     let count = ZipImporter.importZip(at: url)
                     if count == 0 {
                         self?.alertImportModal(which: .doesNotContainWallpaper)
+                    } else {
+                        self?.refresh()
                     }
                 }
             } else if wallpaper.isRegularFile { // hello.mp4

@@ -4,7 +4,7 @@
 //
 //  Parse Wallpaper Engine TEXV texture container files.
 //  Structure: TEXV0005 > TEXI (metadata) > TEXB (image data).
-//  Currently supports JPEG (format 0) extraction only.
+//  Supports embedded JPEG/PNG and uncompressed R8 masks compressed with LZ4.
 //
 
 import Cocoa
@@ -27,11 +27,15 @@ class TEXParser {
 
     /// Extract the image from this TEX container.
     /// Returns nil if the format is unsupported (e.g. DXT).
-    func extractImage() -> NSImage? {
-        // Check TEXI format — format 4+ is DXT compressed (4=DXT1, 8=DXT5)
+    func extractImage(cropVisibleBounds: Bool = true) -> NSImage? {
         let texiMeta = readTEXIMetadata()
-        if let meta = texiMeta, meta.format >= 4 {
-            NSLog("[TEXParser] TEXI format %d (DXT %dx%d), skipping image scan (%d bytes)", meta.format, meta.width, meta.height, data.count)
+        if let image = extractR8Image(metadata: texiMeta) {
+            return image
+        }
+
+        // Skip compressed GPU formats. R8/RG88 are handled separately above.
+        if let meta = texiMeta, [3, 4, 5, 6, 7, 12].contains(meta.format) {
+            NSLog("[TEXParser] TEXI format %d (compressed %dx%d), skipping image scan (%d bytes)", meta.format, meta.width, meta.height, data.count)
             return nil
         }
 
@@ -61,15 +65,21 @@ class TEXParser {
                 jpegData = Data(texbData[jpegOffset...])
             }
             NSLog("[TEXParser] JPEG found at offset %d, size=%d", jpegOffset - texbData.startIndex, jpegData.count)
-            if let image = NSImage(data: jpegData) { return image }
+            if let image = NSImage(data: jpegData) {
+                return cropVisibleBounds ? cropToVisibleBounds(image, metadata: texiMeta) : image
+            }
             // If trimmed JPEG failed, try with all remaining data
-            if let image = NSImage(data: Data(texbData[jpegOffset...])) { return image }
+            if let image = NSImage(data: Data(texbData[jpegOffset...])) {
+                return cropVisibleBounds ? cropToVisibleBounds(image, metadata: texiMeta) : image
+            }
         }
 
         // Look for PNG magic bytes (89504E47) within TEXB
         if let pngOffset = findPNGMagic(in: texbData) {
             let pngData = Data(texbData[pngOffset...])
-            if let image = NSImage(data: pngData) { return image }
+            if let image = NSImage(data: pngData) {
+                return cropVisibleBounds ? cropToVisibleBounds(image, metadata: texiMeta) : image
+            }
         }
 
         // Fallback: scan entire data for JPEG/PNG (some TEX files have non-standard layout)
@@ -80,7 +90,9 @@ class TEXParser {
             } else {
                 jpegData = Data(data[jpegOffset...])
             }
-            if let image = NSImage(data: jpegData) { return image }
+            if let image = NSImage(data: jpegData) {
+                return cropVisibleBounds ? cropToVisibleBounds(image, metadata: texiMeta) : image
+            }
         }
 
         NSLog("[TEXParser] No supported image format found in TEXB (%d bytes, may be DXT)", texbData.count)
@@ -126,6 +138,27 @@ class TEXParser {
         return nil
     }
 
+    private func cropToVisibleBounds(_ image: NSImage, metadata: TEXMetadata?) -> NSImage {
+        guard let metadata,
+              metadata.textureWidth > 0, metadata.textureHeight > 0,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return image
+        }
+
+        let visibleWidth = min(Int(metadata.textureWidth), cgImage.width)
+        let visibleHeight = min(Int(metadata.textureHeight), cgImage.height)
+        guard visibleWidth > 0, visibleHeight > 0,
+              visibleWidth != cgImage.width || visibleHeight != cgImage.height else {
+            return image
+        }
+
+        guard let cropped = cgImage.cropping(to: CGRect(x: 0, y: 0, width: visibleWidth, height: visibleHeight)) else {
+            return image
+        }
+
+        return NSImage(cgImage: cropped, size: CGSize(width: visibleWidth, height: visibleHeight))
+    }
+
     /// Read the TEXB format field (first uint32 after the null-terminated section name).
     /// Format 1 = image-extractable, Format 2 = DXT5, etc.
     private func readTEXBFormat() -> Int {
@@ -146,6 +179,139 @@ class TEXParser {
             i += 1
         }
         return -1
+    }
+
+    private func extractR8Image(metadata: TEXMetadata?) -> NSImage? {
+        guard let metadata, metadata.format == 9 else { return nil }
+        guard let payloadOffset = findVersionedSectionPayload("TEXB") else { return nil }
+
+        let bytes = [UInt8](data)
+        func u32(_ offset: Int) -> UInt32? {
+            guard offset >= 0, offset + 4 <= bytes.count else { return nil }
+            return UInt32(bytes[offset])
+                | (UInt32(bytes[offset + 1]) << 8)
+                | (UInt32(bytes[offset + 2]) << 16)
+                | (UInt32(bytes[offset + 3]) << 24)
+        }
+
+        let width = Int(u32(payloadOffset + 12) ?? metadata.width)
+        let height = Int(u32(payloadOffset + 16) ?? metadata.height)
+        let outputByteCount = Int(u32(payloadOffset + 24) ?? UInt32(width * height))
+        let compressedByteCount = Int(u32(payloadOffset + 28) ?? 0)
+        let dataOffset = payloadOffset + 32
+        let pixelByteCount = width * height
+
+        guard width > 0, height > 0,
+              outputByteCount >= pixelByteCount,
+              compressedByteCount > 0,
+              dataOffset + compressedByteCount <= bytes.count else {
+            return nil
+        }
+
+        let compressed = Array(bytes[dataOffset..<dataOffset + compressedByteCount])
+        let decoded: [UInt8]
+        if compressedByteCount == outputByteCount {
+            decoded = compressed
+        } else if let decompressed = decodeLZ4Block(compressed, outputSize: outputByteCount) {
+            decoded = decompressed
+        } else {
+            return nil
+        }
+
+        guard decoded.count >= pixelByteCount else { return nil }
+        let pixels = Data(decoded[0..<pixelByteCount])
+        guard let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        guard let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else {
+            return nil
+        }
+
+        return NSImage(cgImage: image, size: CGSize(width: width, height: height))
+    }
+
+    private func findVersionedSectionPayload(_ name: String) -> Int? {
+        guard let nameData = name.data(using: .ascii) else { return nil }
+        let bytes = [UInt8](data)
+        let marker = [UInt8](nameData)
+        var index = 0
+        while index + marker.count <= bytes.count {
+            if Array(bytes[index..<index + marker.count]) == marker {
+                var payload = index + marker.count
+                while payload < bytes.count && bytes[payload] != 0 {
+                    payload += 1
+                }
+                guard payload < bytes.count else { return nil }
+                return payload + 1
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    private func decodeLZ4Block(_ input: [UInt8], outputSize: Int) -> [UInt8]? {
+        guard outputSize > 0 else { return [] }
+        var output = Array(repeating: UInt8(0), count: outputSize)
+        var inputIndex = 0
+        var outputIndex = 0
+
+        func readLength(_ base: Int) -> Int? {
+            var length = base
+            if base == 15 {
+                while inputIndex < input.count {
+                    let byte = Int(input[inputIndex])
+                    inputIndex += 1
+                    length += byte
+                    if byte != 255 { break }
+                }
+            }
+            return length
+        }
+
+        while inputIndex < input.count && outputIndex < outputSize {
+            let token = Int(input[inputIndex])
+            inputIndex += 1
+
+            guard let literalLength = readLength(token >> 4),
+                  inputIndex + literalLength <= input.count,
+                  outputIndex + literalLength <= outputSize else {
+                return nil
+            }
+
+            if literalLength > 0 {
+                output[outputIndex..<outputIndex + literalLength] = input[inputIndex..<inputIndex + literalLength]
+                inputIndex += literalLength
+                outputIndex += literalLength
+            }
+
+            if inputIndex >= input.count { break }
+            guard inputIndex + 2 <= input.count else { return nil }
+            let offset = Int(input[inputIndex]) | (Int(input[inputIndex + 1]) << 8)
+            inputIndex += 2
+            guard offset > 0, offset <= outputIndex else { return nil }
+
+            guard let matchBaseLength = readLength(token & 0x0f) else { return nil }
+            let matchLength = matchBaseLength + 4
+            guard outputIndex + matchLength <= outputSize else { return nil }
+
+            for _ in 0..<matchLength {
+                output[outputIndex] = output[outputIndex - offset]
+                outputIndex += 1
+            }
+        }
+
+        return outputIndex == outputSize ? output : nil
     }
 
     /// Find a named section (e.g. "TEXI", "TEXB") in the TEX data
