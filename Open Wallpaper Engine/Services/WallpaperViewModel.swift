@@ -235,11 +235,8 @@ class WallpaperViewModel: ObservableObject {
 }
 
 final class WallpaperVisibilityMonitor {
-    private static let debugResumeDelay: TimeInterval = 3
-
     private weak var wallpaperViewModel: WallpaperViewModel?
     private var timer: Timer?
-    private var delayedResumeTimer: Timer?
     private var observers: [NSObjectProtocol] = []
 
     init(wallpaperViewModel: WallpaperViewModel) {
@@ -252,7 +249,7 @@ final class WallpaperVisibilityMonitor {
 
     func start() {
         stop()
-        let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.25, repeats: true) { [weak self] _ in
             self?.updateVisibilityState()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -283,8 +280,6 @@ final class WallpaperVisibilityMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
-        delayedResumeTimer?.invalidate()
-        delayedResumeTimer = nil
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -297,8 +292,6 @@ final class WallpaperVisibilityMonitor {
         let shouldSuspend = shouldSuspendRendering(for: wallpaperViewModel)
 
         if shouldSuspend {
-            delayedResumeTimer?.invalidate()
-            delayedResumeTimer = nil
             if !wallpaperViewModel.renderingSuspended {
                 wallpaperViewModel.renderingSuspended = true
                 SceneWallpaperViewModel.log("Wallpaper rendering suspended by desktop visibility monitor")
@@ -306,20 +299,10 @@ final class WallpaperVisibilityMonitor {
             return
         }
 
-        guard wallpaperViewModel.renderingSuspended, delayedResumeTimer == nil else { return }
-        let timer = Timer(timeInterval: Self.debugResumeDelay, repeats: false) { [weak self] _ in
-            guard let self, let wallpaperViewModel = self.wallpaperViewModel else { return }
-            self.delayedResumeTimer = nil
-            guard !self.shouldSuspendRendering(for: wallpaperViewModel),
-                  wallpaperViewModel.renderingSuspended else {
-                return
-            }
+        if wallpaperViewModel.renderingSuspended {
             wallpaperViewModel.renderingSuspended = false
-            SceneWallpaperViewModel.log("Wallpaper rendering resumed after \(Self.debugResumeDelay)s debug delay")
+            SceneWallpaperViewModel.log("Wallpaper rendering resumed by desktop visibility monitor")
         }
-        RunLoop.main.add(timer, forMode: .common)
-        delayedResumeTimer = timer
-        SceneWallpaperViewModel.log("Wallpaper rendering resume delayed by \(Self.debugResumeDelay)s for fullscreen debug")
     }
 
     private func shouldSuspendRendering(for wallpaperViewModel: WallpaperViewModel) -> Bool {

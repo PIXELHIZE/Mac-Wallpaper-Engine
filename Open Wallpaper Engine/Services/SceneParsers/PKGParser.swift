@@ -24,30 +24,28 @@ class PKGParser {
     init(data: Data) throws {
         self.data = data
 
-        // Copy data into contiguous array for safe, aligned reads
-        let bytes = [UInt8](data)
         var cursor = 0
 
         func readUInt32() throws -> UInt32 {
-            guard cursor + 4 <= bytes.count else {
+            guard cursor + 4 <= data.count else {
                 throw PKGError.unexpectedEndOfFile
             }
-            let value = UInt32(bytes[cursor])
-                | (UInt32(bytes[cursor+1]) << 8)
-                | (UInt32(bytes[cursor+2]) << 16)
-                | (UInt32(bytes[cursor+3]) << 24)
+            let value = UInt32(data[cursor])
+                | (UInt32(data[cursor + 1]) << 8)
+                | (UInt32(data[cursor + 2]) << 16)
+                | (UInt32(data[cursor + 3]) << 24)
             cursor += 4
             return value
         }
 
         func readString(length: Int) throws -> String {
-            guard length >= 0, cursor + length <= bytes.count else {
+            guard length >= 0, cursor + length <= data.count else {
                 throw PKGError.unexpectedEndOfFile
             }
-            let slice = bytes[cursor..<cursor+length]
+            let slice = data.subdata(in: cursor..<cursor + length)
             cursor += length
-            return String(bytes: slice, encoding: .utf8)
-                ?? String(bytes: slice, encoding: .isoLatin1)
+            return String(data: slice, encoding: .utf8)
+                ?? String(data: slice, encoding: .isoLatin1)
                 ?? ""
         }
 

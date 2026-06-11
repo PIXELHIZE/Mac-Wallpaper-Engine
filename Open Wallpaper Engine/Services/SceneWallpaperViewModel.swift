@@ -8,6 +8,7 @@
 
 import CoreAudio
 import CoreText
+import Foundation
 import QuartzCore
 import SceneKit
 import SpriteKit
@@ -95,6 +96,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
         Self.log("Scene loaded: \(scene.objects.count) objects from \(sceneFile)")
         let skScene = buildSKScene(from: scene, wallpaperDir: dir, generation: generation)
+        pkgParser = nil
         Self.log("SKScene built: \(skScene.children.count) children")
         DispatchQueue.main.async {
             guard self.sceneGeneration == generation else { return }
@@ -1258,6 +1260,10 @@ private final class WEAudioBarsNode: SKNode {
     private let barGains: [CGFloat]
     private var smoothedLevels: [CGFloat]
     private var peakLevels: [CGFloat]
+    private var workingLevels: [CGFloat]
+    private var blendedLevels: [CGFloat]
+    private var scratchLeftLevels: [Float]
+    private var scratchRightLevels: [Float]
 
     init(size: CGSize, barCount: Int, barBounds: (CGFloat, CGFloat), spacing: CGFloat, color: NSColor, targetFPS: Double) {
         let safeSize = CGSize(width: max(1, size.width), height: max(1, size.height))
@@ -1273,6 +1279,10 @@ private final class WEAudioBarsNode: SKNode {
         }
         self.smoothedLevels = Array(repeating: 0, count: count)
         self.peakLevels = Array(repeating: 0, count: count)
+        self.workingLevels = Array(repeating: 0, count: count)
+        self.blendedLevels = Array(repeating: 0, count: count)
+        self.scratchLeftLevels = Array(repeating: 0, count: count)
+        self.scratchRightLevels = Array(repeating: 0, count: count)
 
         let slotWidth = safeSize.width / CGFloat(count)
         let barWidth = max(1, slotWidth * (1 - spacing))
@@ -1319,43 +1329,61 @@ private final class WEAudioBarsNode: SKNode {
         self.barGains = []
         self.smoothedLevels = []
         self.peakLevels = []
+        self.workingLevels = []
+        self.blendedLevels = []
+        self.scratchLeftLevels = []
+        self.scratchRightLevels = []
         super.init(coder: aDecoder)
     }
 
     private func updateBars() {
-        let stereo = WEAudioSpectrum.shared.stereoSpectrum(count: bars.count)
-        var levels = bars.indices.map { index in
-            let left = max(0, min(CGFloat(stereo.left[index]), 1))
-            let right = max(0, min(CGFloat(stereo.right[index]), 1))
+        let barCount = bars.count
+        guard barCount > 0 else { return }
+        ensureAudioScratchCapacity(barCount)
+        WEAudioSpectrum.shared.fillStereoSpectrum(left: &scratchLeftLevels, right: &scratchRightLevels)
+        guard scratchLeftLevels.count == barCount,
+              scratchRightLevels.count == barCount,
+              workingLevels.count == barCount,
+              blendedLevels.count == barCount else {
+            return
+        }
+
+        for index in 0..<barCount {
+            let left = max(0, min(CGFloat(scratchLeftLevels[index]), 1))
+            let right = max(0, min(CGFloat(scratchRightLevels[index]), 1))
             let position = CGFloat(index) / CGFloat(max(bars.count - 1, 1))
             let positional = left * (1 - position) + right * position
             let mono = (left + right) * 0.5
             let lowBandLift = 1 + (1 - position) * 0.30
-            return max(0, min((mono * 0.62 + positional * 0.38) * lowBandLift, 1))
+            workingLevels[index] = max(0, min((mono * 0.62 + positional * 0.38) * lowBandLift, 1))
         }
-        guard levels.count == bars.count else { return }
 
-        if levels.count > 2 {
-            var blended = levels
-            for index in levels.indices {
-                let previous = levels[max(0, index - 1)]
-                let next = levels[min(levels.count - 1, index + 1)]
-                blended[index] = previous * 0.05 + levels[index] * 0.90 + next * 0.05
+        if barCount > 2 {
+            for index in 0..<barCount {
+                let previous = workingLevels[max(0, index - 1)]
+                let next = workingLevels[min(barCount - 1, index + 1)]
+                blendedLevels[index] = previous * 0.05 + workingLevels[index] * 0.90 + next * 0.05
             }
-            levels = blended
+            for index in 0..<barCount {
+                workingLevels[index] = blendedLevels[index]
+            }
         }
 
-        let average = levels.reduce(CGFloat(0), +) / CGFloat(max(levels.count, 1))
-        for index in levels.indices {
-            let contrasted = average + (levels[index] - average) * 1.62
-            levels[index] = max(0, min(contrasted * barGains[index], 1))
+        var total = CGFloat(0)
+        for level in workingLevels {
+            total += level
+        }
+        let average = total / CGFloat(barCount)
+        for index in 0..<barCount {
+            let contrasted = average + (workingLevels[index] - average) * 1.62
+            workingLevels[index] = max(0, min(contrasted * barGains[index], 1))
         }
 
         let bottom = -size.height / 2
         let maxHeight = size.height * barBounds.max
         let minHeight = size.height * barBounds.min
-        for index in bars.indices {
-            let rawLevel = pow(min(1, levels[index] * 2.05), 0.46)
+        for index in 0..<barCount {
+            let rawLevel = pow(min(1, workingLevels[index] * 2.05), 0.46)
             let transient = max(0, rawLevel - smoothedLevels[index])
             let level = min(1, rawLevel + transient * 0.42)
             let attackBase: CGFloat = level > smoothedLevels[index] ? 0.78 : 0.40
@@ -1373,6 +1401,19 @@ private final class WEAudioBarsNode: SKNode {
             bars[index].position.y = bottom + height / 2
             bars[index].alpha += (targetAlpha - bars[index].alpha) * 0.30
         }
+    }
+
+    private func ensureAudioScratchCapacity(_ count: Int) {
+        guard workingLevels.count != count
+            || blendedLevels.count != count
+            || scratchLeftLevels.count != count
+            || scratchRightLevels.count != count else {
+            return
+        }
+        workingLevels = Array(repeating: 0, count: count)
+        blendedLevels = Array(repeating: 0, count: count)
+        scratchLeftLevels = Array(repeating: 0, count: count)
+        scratchRightLevels = Array(repeating: 0, count: count)
     }
 }
 
@@ -1542,32 +1583,43 @@ final class WEAudioSpectrum {
 
     func spectrum(count: Int) -> [Float] {
         guard count > 0 else { return [] }
-
-        stateLock.lock()
-        let levels = latestLevels
-        let isStale = CACurrentMediaTime() - lastAudioTime > 0.6
-        stateLock.unlock()
-
-        guard !isStale, !levels.isEmpty else {
-            return Array(repeating: 0, count: count)
-        }
-        return resample(levels, to: count)
+        var levels = Array(repeating: Float(0), count: count)
+        fillSpectrum(into: &levels)
+        return levels
     }
 
     func stereoSpectrum(count: Int) -> (left: [Float], right: [Float]) {
         guard count > 0 else { return ([], []) }
+        var left = Array(repeating: Float(0), count: count)
+        var right = Array(repeating: Float(0), count: count)
+        fillStereoSpectrum(left: &left, right: &right)
+        return (left, right)
+    }
 
+    func fillSpectrum(into output: inout [Float]) {
+        guard !output.isEmpty else { return }
         stateLock.lock()
-        let left = latestLeftLevels
-        let right = latestRightLevels
         let isStale = CACurrentMediaTime() - lastAudioTime > 0.6
-        stateLock.unlock()
-
-        guard !isStale, !left.isEmpty, !right.isEmpty else {
-            let empty = Array(repeating: Float(0), count: count)
-            return (empty, empty)
+        if isStale || latestLevels.isEmpty {
+            fillZeros(&output)
+        } else {
+            fillResampled(latestLevels, into: &output)
         }
-        return (resample(left, to: count), resample(right, to: count))
+        stateLock.unlock()
+    }
+
+    func fillStereoSpectrum(left: inout [Float], right: inout [Float]) {
+        guard !left.isEmpty || !right.isEmpty else { return }
+        stateLock.lock()
+        let isStale = CACurrentMediaTime() - lastAudioTime > 0.6
+        if isStale || latestLeftLevels.isEmpty || latestRightLevels.isEmpty {
+            fillZeros(&left)
+            fillZeros(&right)
+        } else {
+            fillResampled(latestLeftLevels, into: &left)
+            fillResampled(latestRightLevels, into: &right)
+        }
+        stateLock.unlock()
     }
 
     func audioResponse(
@@ -1580,28 +1632,35 @@ final class WEAudioSpectrum {
         amount: CGFloat
     ) -> CGFloat {
         let count = max(1, resolution)
-        let stereo = stereoSpectrum(count: count)
         let lower = max(0, min(frequencyMin, frequencyMax, count - 1))
         let upper = max(0, min(max(frequencyMin, frequencyMax), count - 1))
         guard lower <= upper else { return 0 }
 
-        var total: Float = 0
-        var samples = 0
-        for index in lower...upper {
-            switch channelMode {
-            case 1:
-                total += stereo.left[index]
-                samples += 1
-            case 2:
-                total += stereo.right[index]
-                samples += 1
-            default:
-                total += (stereo.left[index] + stereo.right[index]) * 0.5
-                samples += 1
+        var average = CGFloat(0)
+        stateLock.lock()
+        let isStale = CACurrentMediaTime() - lastAudioTime > 0.6
+        if !isStale, !latestLeftLevels.isEmpty, !latestRightLevels.isEmpty {
+            var total: Float = 0
+            var samples = 0
+            for index in lower...upper {
+                let left = resampledValue(latestLeftLevels, outputIndex: index, outputCount: count)
+                let right = resampledValue(latestRightLevels, outputIndex: index, outputCount: count)
+                switch channelMode {
+                case 1:
+                    total += left
+                    samples += 1
+                case 2:
+                    total += right
+                    samples += 1
+                default:
+                    total += (left + right) * 0.5
+                    samples += 1
+                }
             }
+            average = CGFloat(total / Float(max(samples, 1)))
         }
+        stateLock.unlock()
 
-        let average = CGFloat(total / Float(max(samples, 1)))
         let bounded = smoothStep(edge0: bounds.min, edge1: bounds.max, x: average)
         return min(1, max(0, pow(max(0, bounded), max(0.001, power)) * amount))
     }
@@ -2021,16 +2080,39 @@ final class WEAudioSpectrum {
 
     private func resample(_ levels: [Float], to count: Int) -> [Float] {
         guard count > 0 else { return [] }
-        guard levels.count != count, levels.count > 1 else {
-            return levels.count == count ? levels : Array(repeating: levels.first ?? 0, count: count)
+        var output = Array(repeating: Float(0), count: count)
+        fillResampled(levels, into: &output)
+        return output
+    }
+
+    private func fillResampled(_ levels: [Float], into output: inout [Float]) {
+        guard !output.isEmpty else { return }
+        guard !levels.isEmpty else {
+            fillZeros(&output)
+            return
+        }
+        for index in output.indices {
+            output[index] = resampledValue(levels, outputIndex: index, outputCount: output.count)
+        }
+    }
+
+    private func resampledValue(_ levels: [Float], outputIndex: Int, outputCount: Int) -> Float {
+        guard outputCount > 0, !levels.isEmpty else { return 0 }
+        guard levels.count != outputCount, levels.count > 1 else {
+            return levels[min(max(outputIndex, 0), levels.count - 1)]
         }
 
-        return (0..<count).map { index in
-            let sourceIndex = Double(index) * Double(levels.count - 1) / Double(max(count - 1, 1))
-            let lower = Int(floor(sourceIndex))
-            let upper = min(levels.count - 1, lower + 1)
-            let blend = Float(sourceIndex - Double(lower))
-            return levels[lower] * (1 - blend) + levels[upper] * blend
+        let clampedIndex = min(max(outputIndex, 0), outputCount - 1)
+        let sourceIndex = Double(clampedIndex) * Double(levels.count - 1) / Double(max(outputCount - 1, 1))
+        let lower = Int(floor(sourceIndex))
+        let upper = min(levels.count - 1, lower + 1)
+        let blend = Float(sourceIndex - Double(lower))
+        return levels[lower] * (1 - blend) + levels[upper] * blend
+    }
+
+    private func fillZeros(_ output: inout [Float]) {
+        for index in output.indices {
+            output[index] = 0
         }
     }
 
@@ -2215,8 +2297,8 @@ private final class WEPuppetAnimationCache {
     private let cache = NSCache<NSString, WEPuppetRenderedAnimationBox>()
 
     private init() {
-        cache.countLimit = 2
-        cache.totalCostLimit = 360 * 1024 * 1024
+        cache.countLimit = 1
+        cache.totalCostLimit = 220 * 1024 * 1024
     }
 
     func animation(for key: String) -> WEPuppetRenderedAnimation? {
@@ -2466,42 +2548,44 @@ private enum WEPuppetModelRenderer {
             var currentIndex = -1
             var currentWaveTick = -1
             let action = SKAction.customAction(withDuration: 1) { _, _ in
-                let now = CACurrentMediaTime()
-                let delta = min(max(0, CGFloat(now - lastHostTime)), frameInterval * 2)
-                lastHostTime = now
-                continuousTime += delta
-                let elapsedTime = continuousTime
-                let nextIndex: Int
-                if playbackDuration > 0, frameCount > 1 {
-                    let phaseTime = elapsedTime.truncatingRemainder(dividingBy: playbackDuration)
-                    let progress = min(0.999_999, max(0, phaseTime / playbackDuration))
-                    nextIndex = min(frameCount - 1, Int(progress * CGFloat(frameCount)))
-                } else {
-                    nextIndex = 0
-                }
+                autoreleasepool {
+                    let now = CACurrentMediaTime()
+                    let delta = min(max(0, CGFloat(now - lastHostTime)), frameInterval * 2)
+                    lastHostTime = now
+                    continuousTime += delta
+                    let elapsedTime = continuousTime
+                    let nextIndex: Int
+                    if playbackDuration > 0, frameCount > 1 {
+                        let phaseTime = elapsedTime.truncatingRemainder(dividingBy: playbackDuration)
+                        let progress = min(0.999_999, max(0, phaseTime / playbackDuration))
+                        nextIndex = min(frameCount - 1, Int(progress * CGFloat(frameCount)))
+                    } else {
+                        nextIndex = 0
+                    }
 
-                let waveTick = Int(floor(elapsedTime / frameInterval))
-                let shouldRefreshGeometry = nextIndex != currentIndex || (dynamicWaterWaves && waveTick != currentWaveTick)
-                if shouldRefreshGeometry {
-                    currentIndex = nextIndex
-                    currentWaveTick = waveTick
+                    let waveTick = Int(floor(elapsedTime / frameInterval))
+                    let shouldRefreshGeometry = nextIndex != currentIndex || (dynamicWaterWaves && waveTick != currentWaveTick)
+                    if shouldRefreshGeometry {
+                        currentIndex = nextIndex
+                        currentWaveTick = waveTick
 
-                    if dynamicWaterWaves, let geometry = dynamicGeometry(frameIndex: nextIndex, elapsedTime: elapsedTime) {
-                        geometryNode.geometry = geometry
-                        for overlay in pulseOverlays {
-                            overlay.node.geometry = geometryCopy(geometry, material: overlay.material)
-                        }
-                    } else if nextIndex < geometries.count {
-                        geometryNode.geometry = geometries[nextIndex]
-                        for overlay in pulseOverlays where nextIndex < overlay.geometries.count {
-                            overlay.node.geometry = overlay.geometries[nextIndex]
+                        if dynamicWaterWaves, let geometry = dynamicGeometry(frameIndex: nextIndex, elapsedTime: elapsedTime) {
+                            geometryNode.geometry = geometry
+                            for overlay in pulseOverlays {
+                                overlay.node.geometry = geometryCopy(geometry, material: overlay.material)
+                            }
+                        } else if nextIndex < geometries.count {
+                            geometryNode.geometry = geometries[nextIndex]
+                            for overlay in pulseOverlays where nextIndex < overlay.geometries.count {
+                                overlay.node.geometry = overlay.geometries[nextIndex]
+                            }
                         }
                     }
-                }
 
-                if effects.hasDynamicMaterial {
-                    updatePulseMaterial(material, effects: effects, time: elapsedTime)
-                    updatePulseOverlays(pulseOverlays, time: elapsedTime)
+                    if effects.hasDynamicMaterial {
+                        updatePulseMaterial(material, effects: effects, time: elapsedTime)
+                        updatePulseOverlays(pulseOverlays, time: elapsedTime)
+                    }
                 }
             }
             node.run(.repeatForever(action), withKey: "we-puppet-scene-kit-animation")
@@ -2673,22 +2757,97 @@ private enum WEPuppetModelRenderer {
         let outputWidth = max(1, Int(round(CGFloat(cgImage.width) * scale)))
         let outputHeight = max(1, Int(round(CGFloat(cgImage.height) * scale)))
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: nil,
-            width: outputWidth,
-            height: outputHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGImageByteOrderInfo.order32Big.rawValue
-        ) else {
+        let bytesPerRow = outputWidth * 4
+        var pixels = Array(repeating: UInt8(0), count: bytesPerRow * outputHeight)
+        let drawn = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let context = CGContext(
+                data: rawBuffer.baseAddress,
+                width: outputWidth,
+                height: outputHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGImageByteOrderInfo.order32Big.rawValue
+            ) else {
+                return false
+            }
+
+            context.interpolationQuality = .high
+            context.setBlendMode(.copy)
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: outputWidth, height: outputHeight))
+            return true
+        }
+        guard drawn else {
             return cgImage
         }
 
-        context.interpolationQuality = .high
-        context.setBlendMode(.copy)
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: outputWidth, height: outputHeight))
-        return context.makeImage() ?? cgImage
+        bleedLowAlphaTextureEdges(&pixels, width: outputWidth, height: outputHeight)
+
+        return pixels.withUnsafeMutableBytes { rawBuffer in
+            guard let context = CGContext(
+                data: rawBuffer.baseAddress,
+                width: outputWidth,
+                height: outputHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGImageByteOrderInfo.order32Big.rawValue
+            ) else {
+                return nil
+            }
+            return context.makeImage()
+        } ?? cgImage
+    }
+
+    private static func bleedLowAlphaTextureEdges(_ pixels: inout [UInt8], width: Int, height: Int) {
+        guard width > 1, height > 1, pixels.count >= width * height * 4 else { return }
+
+        let alphaLimit = UInt8(220)
+        let sourceAlpha = UInt8(220)
+        let neighborOffsets = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (1, -1), (-1, 1), (1, 1)
+        ]
+
+        for _ in 0..<2 {
+            var changed = false
+            for y in 0..<height {
+                for x in 0..<width {
+                    let index = (y * width + x) * 4
+                    let alpha = pixels[index + 3]
+                    guard alpha > 0, alpha < alphaLimit else { continue }
+
+                    var red = 0
+                    var green = 0
+                    var blue = 0
+                    var samples = 0
+
+                    for offset in neighborOffsets {
+                        let nx = x + offset.0
+                        let ny = y + offset.1
+                        guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                        let neighborIndex = (ny * width + nx) * 4
+                        let neighborAlpha = pixels[neighborIndex + 3]
+                        guard neighborAlpha >= sourceAlpha else { continue }
+
+                        let divisor = max(Int(neighborAlpha), 1)
+                        red += Int(pixels[neighborIndex]) * 255 / divisor
+                        green += Int(pixels[neighborIndex + 1]) * 255 / divisor
+                        blue += Int(pixels[neighborIndex + 2]) * 255 / divisor
+                        samples += 1
+                    }
+
+                    guard samples > 0 else { continue }
+                    let alphaValue = Int(alpha)
+                    pixels[index] = UInt8(min(255, (red / samples) * alphaValue / 255))
+                    pixels[index + 1] = UInt8(min(255, (green / samples) * alphaValue / 255))
+                    pixels[index + 2] = UInt8(min(255, (blue / samples) * alphaValue / 255))
+                    changed = true
+                }
+            }
+
+            if !changed { break }
+        }
     }
 
     private static func sceneKitTextureDimension(for quality: GSTextureResolutionQuality) -> CGFloat {
@@ -2727,9 +2886,12 @@ private enum WEPuppetModelRenderer {
 
     private static func applySceneKitSpriteKitColorCorrection(to material: SCNMaterial) {
         // SK3DNode hands SceneKit's linear pass to SpriteKit, so encode it back to display sRGB.
+        // Keep the correction away from low-alpha edges, otherwise premultiplied fringe pixels turn into bright seams.
         material.shaderModifiers = [
             .fragment: """
-            _output.color.rgb = pow(max(_output.color.rgb, vec3(0.0)), vec3(0.45454545));
+            float edgeSafeAlpha = smoothstep(0.20, 0.95, _output.color.a);
+            vec3 encodedColor = pow(max(_output.color.rgb, vec3(0.0)), vec3(0.45454545));
+            _output.color.rgb = mix(_output.color.rgb, encodedColor, edgeSafeAlpha);
             """
         ]
     }

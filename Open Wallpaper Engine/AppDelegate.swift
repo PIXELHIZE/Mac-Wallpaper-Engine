@@ -25,12 +25,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var globalSettingsViewModel = GlobalSettingsViewModel()
     
     var importOpenPanel: NSOpenPanel!
-    
+
     var eventHandler: Any?
-    
+    private var frontmostApplicationObserver: NSObjectProtocol?
+    private var frontmostApplicationIsFinder = false
+
     static var shared = AppDelegate()
-    
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
         // 创建设置视窗
         setSettingsWindow()
         
@@ -81,7 +85,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationDidBecomeActive(_ notification: Notification) {
-        NSApp.activate(ignoringOtherApps: true)
+        if mainWindowController?.window?.isVisible == true || settingsWindow?.isVisible == true {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -93,6 +99,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        if let eventHandler {
+            NSEvent.removeMonitor(eventHandler)
+            self.eventHandler = nil
+        }
+        if let frontmostApplicationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(frontmostApplicationObserver)
+            self.frontmostApplicationObserver = nil
+        }
+
         if let wallpaper = UserDefaults.standard.url(forKey: "OSWallpaper") {
             for screen in NSScreen.screens {
                 try? NSWorkspace.shared.setDesktopImageURL(wallpaper, for: screen)
@@ -202,6 +217,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func setEventHandler() {
+        updateFrontmostApplicationCache()
+        frontmostApplicationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.updateFrontmostApplicationCache(notification: notification)
+        }
+
         // Only monitor event types we actually handle — .any causes main thread starvation
         let relevantEvents: NSEvent.EventTypeMask = [
             .scrollWheel, .mouseMoved, .mouseEntered, .mouseExited,
@@ -210,8 +234,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ]
         self.eventHandler = NSEvent.addGlobalMonitorForEvents(matching: relevantEvents) { [weak self] event in
             guard let self = self,
-                  let frontmostApplication = NSWorkspace.shared.frontmostApplication,
-                  frontmostApplication.bundleIdentifier == "com.apple.finder" else { return }
+                  self.frontmostApplicationIsFinder,
+                  self.hasInteractiveWallpaper else { return }
 
             // Find the WKWebView in whichever wallpaper window the event lands on
             let mouseLocation = NSEvent.mouseLocation
@@ -238,6 +262,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 break
             }
         }
+    }
+
+    private var hasInteractiveWallpaper: Bool {
+        wallpaperWindows.keys.contains { screenId in
+            let type = wallpaperViewModel.wallpaper(for: screenId).project.type.lowercased()
+            return type == "web" || type == "application"
+        }
+    }
+
+    private func updateFrontmostApplicationCache(notification: Notification? = nil) {
+        let application = notification?.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            ?? NSWorkspace.shared.frontmostApplication
+        frontmostApplicationIsFinder = application?.bundleIdentifier == "com.apple.finder"
     }
     
     func saveCurrentWallpaper() {

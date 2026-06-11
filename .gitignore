@@ -13,3 +13,9 @@ Thumbs.db
 
 ## Playwright MCP
 .playwright-mcp/
+
+## Local Wallpaper Engine assets and generated outputs
+3005028837/
+window-wallpaper/
+exports/
+*.profraw

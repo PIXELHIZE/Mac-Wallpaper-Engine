@@ -621,7 +621,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Wallpaper Engine";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_LSUIElement = NO;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Open Wallpaper Engine analyzes system audio to drive audio-reactive scene wallpapers.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -661,7 +661,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Wallpaper Engine";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_LSUIElement = NO;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Open Wallpaper Engine analyzes system audio to drive audio-reactive scene wallpapers.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (

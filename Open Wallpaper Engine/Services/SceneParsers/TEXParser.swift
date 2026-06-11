@@ -185,13 +185,12 @@ class TEXParser {
         guard let metadata, metadata.format == 9 else { return nil }
         guard let payloadOffset = findVersionedSectionPayload("TEXB") else { return nil }
 
-        let bytes = [UInt8](data)
         func u32(_ offset: Int) -> UInt32? {
-            guard offset >= 0, offset + 4 <= bytes.count else { return nil }
-            return UInt32(bytes[offset])
-                | (UInt32(bytes[offset + 1]) << 8)
-                | (UInt32(bytes[offset + 2]) << 16)
-                | (UInt32(bytes[offset + 3]) << 24)
+            guard offset >= 0, offset + 4 <= data.count else { return nil }
+            return UInt32(data[offset])
+                | (UInt32(data[offset + 1]) << 8)
+                | (UInt32(data[offset + 2]) << 16)
+                | (UInt32(data[offset + 3]) << 24)
         }
 
         let width = Int(u32(payloadOffset + 12) ?? metadata.width)
@@ -204,11 +203,11 @@ class TEXParser {
         guard width > 0, height > 0,
               outputByteCount >= pixelByteCount,
               compressedByteCount > 0,
-              dataOffset + compressedByteCount <= bytes.count else {
+              dataOffset + compressedByteCount <= data.count else {
             return nil
         }
 
-        let compressed = Array(bytes[dataOffset..<dataOffset + compressedByteCount])
+        let compressed = [UInt8](data[dataOffset..<dataOffset + compressedByteCount])
         let decoded: [UInt8]
         if compressedByteCount == outputByteCount {
             decoded = compressed
@@ -243,16 +242,20 @@ class TEXParser {
 
     private func findVersionedSectionPayload(_ name: String) -> Int? {
         guard let nameData = name.data(using: .ascii) else { return nil }
-        let bytes = [UInt8](data)
         let marker = [UInt8](nameData)
         var index = 0
-        while index + marker.count <= bytes.count {
-            if Array(bytes[index..<index + marker.count]) == marker {
+        while index + marker.count <= data.count {
+            var matches = true
+            for markerIndex in marker.indices where data[index + markerIndex] != marker[markerIndex] {
+                matches = false
+                break
+            }
+            if matches {
                 var payload = index + marker.count
-                while payload < bytes.count && bytes[payload] != 0 {
+                while payload < data.count && data[payload] != 0 {
                     payload += 1
                 }
-                guard payload < bytes.count else { return nil }
+                guard payload < data.count else { return nil }
                 return payload + 1
             }
             index += 1
